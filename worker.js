@@ -40,6 +40,14 @@ const REMOVE_PREFIXES = [
 ];
 const REMOVE_SYMBOLS = ['✅', '✓', '✔️', '✔'];
 
+// Words that may come BEFORE items to add them: "הוסף שוקולד" adds "שוקולד".
+// (Typing just "שוקולד" also adds it — these words are simply ignored.)
+const ADD_PREFIXES = [
+  'תוסיף לרשימה', 'הוסף לרשימה', 'צריך לקנות',
+  'הוסף', 'תוסיף', 'להוסיף', 'צריך', 'חסר', 'לקנות', 'תקנה', 'רשום', 'תרשום',
+  'add',
+];
+
 // ---------- webhook entry point ----------
 
 export default {
@@ -97,6 +105,14 @@ function getItemToRemove(text) {
   return null;
 }
 
+// "הוסף שוקולד" -> "שוקולד",  "שוקולד" -> "שוקולד"
+function stripAddPrefix(text) {
+  for (const prefix of ADD_PREFIXES) {
+    if (text.startsWith(prefix + ' ')) return text.slice(prefix.length).trim();
+  }
+  return text;
+}
+
 // ---------- command logic ----------
 
 async function handleCommand(text, db, chatId) {
@@ -109,7 +125,7 @@ async function handleCommand(text, db, chatId) {
   // "?" becomes "" after normalize, so an empty message also shows help
   if (text === '' || HELP_PHRASES.includes(text)) {
     return { text: 'פקודות:\n' +
-          '• <מוצר> – הוספה (אפשר כמה: חלב, ביצים)\n' +
+          '• <מוצר> / הוסף <מוצר> – הוספה (אפשר כמה: חלב, ביצים)\n' +
           '• קניתי <מוצר> / הסר <מוצר> / ✅ <מוצר> – הסרה\n' +
           '• רשימה / מה צריך – הצגת הרשימה\n' +
           '• נקה רשימה / קניתי הכל – מחיקת הכל' };
@@ -134,8 +150,11 @@ async function handleCommand(text, db, chatId) {
     return { text: `הוסר "${item}" (נשארו ${left})` };
   }
 
+  // Just "הוסף" with nothing after it
+  if (ADD_PREFIXES.includes(text)) return { text: 'מה להוסיף? למשל: הוסף חלב' };
+
   // Anything else = add item(s)
-  const items = text.split(/[,\n]/).map(s => s.trim()).filter(Boolean);
+  const items = stripAddPrefix(text).split(/[,\n]/).map(s => s.trim()).filter(Boolean);
   const added = [];
   for (const newItem of items) {
     const result = await db.prepare('INSERT OR IGNORE INTO list_items (chat_id, name, added_at) VALUES (?, ?, ?)')
