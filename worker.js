@@ -9,10 +9,38 @@
  *   - Secret:   BOT_TOKEN         (from @BotFather)
  *   - Secret:   WEBHOOK_SECRET    (any random text you invent, e.g. "k39dfj2Lq8")
  *
- * Commands (Hebrew):
- *   חלב | חלב, ביצים (or one item per line) | הסר חלב | מחק חלב | קניתי חלב
- *   רשימה | הצג רשימה | נקה רשימה | עזרה
+ * Anything that is not a command below is added to the list as an item
+ * (several at once with commas or one per line). Adding reacts with 👍.
  */
+
+// ---------- command phrases (add more here) ----------
+
+const HELP_PHRASES = [
+  'start', 'help', 'עזרה', 'פקודות', 'מה אפשר', 'איך משתמשים',
+];
+
+const SHOW_PHRASES = [
+  'רשימה', 'הצג', 'הצג רשימה', 'הצג הכל',
+  'מה צריך', 'מה חסר', 'מה ברשימה', 'מה יש ברשימה',
+  'תראה', 'תראה רשימה', 'תראה לי', 'הראה', 'רשימת קניות', 'קניות',
+  'list', 'show',
+];
+
+const CLEAR_PHRASES = [
+  'נקה רשימה', 'נקה', 'נקה הכל', 'מחק הכל', 'מחק רשימה',
+  'אפס', 'אפס רשימה', 'התחל מחדש', 'קניתי הכל', 'קנינו הכל',
+];
+
+// Words that come BEFORE an item to remove it: "קניתי חלב", "✅ חלב".
+// Longer phrases first, so "יש לנו חלב" removes "חלב" and not "לנו חלב".
+const REMOVE_PREFIXES = [
+  'אין צורך', 'יש לנו',
+  'הסר', 'מחק', 'תמחק', 'הורד', 'תוריד', 'בטל',
+  'קניתי', 'קנינו', 'נקנה', 'לקחתי', 'יש',
+];
+const REMOVE_SYMBOLS = ['✅', '✓', '✔️', '✔'];
+
+// ---------- webhook entry point ----------
 
 export default {
   async fetch(request, env) {
@@ -47,10 +75,29 @@ export default {
   },
 };
 
-// "/List@MyBot" -> "list"
+// "/List@MyBot" -> "list",  "מה צריך?" -> "מה צריך",  "חלב!" -> "חלב"
 function normalize(text) {
-  return text.trim().toLowerCase().replace(/^\//, '').replace(/^(\S+)@\S+/, '$1');
+  return text
+      .trim()
+      .toLowerCase()
+      .replace(/^\//, '')
+      .replace(/^(\S+)@\S+/, '$1')
+      .replace(/[?!.]+$/, '')
+      .trim();
 }
+
+// "קניתי חלב" -> "חלב",  "✅ חלב" -> "חלב",  "חלב" -> null
+function getItemToRemove(text) {
+  for (const prefix of REMOVE_PREFIXES) {
+    if (text.startsWith(prefix + ' ')) return text.slice(prefix.length).trim();
+  }
+  for (const symbol of REMOVE_SYMBOLS) {
+    if (text.startsWith(symbol)) return text.slice(symbol.length).trim();
+  }
+  return null;
+}
+
+// ---------- command logic ----------
 
 async function handleCommand(text, db, chatId) {
   // Creates the table the first time; does nothing afterwards.
@@ -59,29 +106,28 @@ async function handleCommand(text, db, chatId) {
       'CREATE TABLE IF NOT EXISTS list_items (chat_id INTEGER, name TEXT, added_at INTEGER, PRIMARY KEY (chat_id, name))'
   ).run();
 
-  if (text === 'start' || text === 'help' || text === 'עזרה') {
+  // "?" becomes "" after normalize, so an empty message also shows help
+  if (text === '' || HELP_PHRASES.includes(text)) {
     return { text: 'פקודות:\n' +
           '• <מוצר> – הוספה (אפשר כמה: חלב, ביצים)\n' +
-          '• הסר <מוצר> / מחק <מוצר>\n' +
-          '• קניתי <מוצר>\n' +
-          '• רשימה – הצגת הרשימה\n' +
-          '• נקה רשימה – מחיקת הכל' };
+          '• קניתי <מוצר> / הסר <מוצר> / ✅ <מוצר> – הסרה\n' +
+          '• רשימה / מה צריך – הצגת הרשימה\n' +
+          '• נקה רשימה / קניתי הכל – מחיקת הכל' };
   }
 
-  if (text === 'רשימה' || text === 'הצג רשימה') {
+  if (SHOW_PHRASES.includes(text)) {
     const { results } = await db.prepare('SELECT name FROM list_items WHERE chat_id = ? ORDER BY added_at, rowid').bind(chatId).all();
     if (results.length === 0) return { text: 'הרשימה ריקה ✅' };
     return { text: '🛒 רשימת קניות:\n' + results.map((r, i) => `${i + 1}. ${r.name}`).join('\n') };
   }
 
-  if (text === 'נקה רשימה') {
+  if (CLEAR_PHRASES.includes(text)) {
     await db.prepare('DELETE FROM list_items WHERE chat_id = ?').bind(chatId).run();
     return { text: 'הרשימה נוקתה 🧹' };
   }
 
-  const removeMatch = text.match(/^(הסר|מחק|קניתי|קנינו)\s+(.+)$/);
-  if (removeMatch) {
-    const item = removeMatch[2].trim();
+  const item = getItemToRemove(text);
+  if (item) {
     const result = await db.prepare('DELETE FROM list_items WHERE chat_id = ? AND name = ?').bind(chatId, item).run();
     if (result.meta.changes === 0) return { text: `"${item}" לא ברשימה` };
     const { left } = await db.prepare('SELECT COUNT(*) AS left FROM list_items WHERE chat_id = ?').bind(chatId).first();
@@ -91,10 +137,10 @@ async function handleCommand(text, db, chatId) {
   // Anything else = add item(s)
   const items = text.split(/[,\n]/).map(s => s.trim()).filter(Boolean);
   const added = [];
-  for (const item of items) {
+  for (const newItem of items) {
     const result = await db.prepare('INSERT OR IGNORE INTO list_items (chat_id, name, added_at) VALUES (?, ?, ?)')
-        .bind(chatId, item, Date.now()).run();
-    if (result.meta.changes > 0) added.push(item);
+        .bind(chatId, newItem, Date.now()).run();
+    if (result.meta.changes > 0) added.push(newItem);
   }
   if (added.length === 0) return { text: 'כבר ברשימה 👍' };
   return { react: '👍' };
