@@ -1,15 +1,17 @@
 /**
  * Telegram grocery list bot — Cloudflare Worker + D1 database (free, instant replies).
  *
+ * Every chat has its OWN list: each person who talks to the bot only sees their items.
+ * (A Telegram group gets one list shared by the group's members.)
+ *
  * Needs in Cloudflare (Worker -> Settings):
  *   - D1 database binding named:  DB
  *   - Secret:   BOT_TOKEN         (from @BotFather)
  *   - Secret:   WEBHOOK_SECRET    (any random text you invent, e.g. "k39dfj2Lq8")
- *   - Variable: ALLOWED_CHAT_IDS  (optional, comma-separated, e.g. "123456789,-987654321")
  *
  * Commands (Hebrew):
  *   חלב | חלב, ביצים (or one item per line) | הסר חלב | מחק חלב | קניתי חלב
- *   רשימה | הצג רשימה | נקה רשימה | עזרה | id
+ *   רשימה | הצג רשימה | נקה רשימה | עזרה
  */
 
 export default {
@@ -29,14 +31,7 @@ export default {
     const chatId = msg.chat.id;
     const text = normalize(msg.text);
 
-    let result;
-    if (text === 'id' || text === 'מזהה') {
-      result = { text: 'מזהה הצ\'אט: ' + chatId };
-    } else if (!isAllowed(chatId, env)) {
-      result = { text: 'מצטער, זה בוט פרטי.' };
-    } else {
-      result = await handleCommand(text, env.DB);
-    }
+    const result = await handleCommand(text, env.DB, chatId);
 
     // Answer directly in the webhook response — Telegram performs it for us.
     // Either a reaction on the user's message, or a text reply.
@@ -57,41 +52,39 @@ function normalize(text) {
   return text.trim().toLowerCase().replace(/^\//, '').replace(/^(\S+)@\S+/, '$1');
 }
 
-function isAllowed(chatId, env) {
-  const allowed = (env.ALLOWED_CHAT_IDS || '').split(',').map(s => s.trim()).filter(Boolean);
-  return allowed.length === 0 || allowed.includes(String(chatId));
-}
-
-async function handleCommand(text, db) {
-  // Creates the table the first time; does nothing afterwards
-  await db.prepare('CREATE TABLE IF NOT EXISTS items (name TEXT PRIMARY KEY, added_at INTEGER)').run();
+async function handleCommand(text, db, chatId) {
+  // Creates the table the first time; does nothing afterwards.
+  // chat_id separates the lists: every query below only touches this chat's rows.
+  await db.prepare(
+      'CREATE TABLE IF NOT EXISTS list_items (chat_id INTEGER, name TEXT, added_at INTEGER, PRIMARY KEY (chat_id, name))'
+  ).run();
 
   if (text === 'start' || text === 'help' || text === 'עזרה') {
     return { text: 'פקודות:\n' +
-      '• <מוצר> – הוספה (אפשר כמה: חלב, ביצים)\n' +
-      '• הסר <מוצר> / מחק <מוצר>\n' +
-      '• קניתי <מוצר>\n' +
-      '• רשימה – הצגת הרשימה\n' +
-      '• נקה רשימה – מחיקת הכל' };
+          '• <מוצר> – הוספה (אפשר כמה: חלב, ביצים)\n' +
+          '• הסר <מוצר> / מחק <מוצר>\n' +
+          '• קניתי <מוצר>\n' +
+          '• רשימה – הצגת הרשימה\n' +
+          '• נקה רשימה – מחיקת הכל' };
   }
 
   if (text === 'רשימה' || text === 'הצג רשימה') {
-    const { results } = await db.prepare('SELECT name FROM items ORDER BY added_at, rowid').all();
+    const { results } = await db.prepare('SELECT name FROM list_items WHERE chat_id = ? ORDER BY added_at, rowid').bind(chatId).all();
     if (results.length === 0) return { text: 'הרשימה ריקה ✅' };
     return { text: '🛒 רשימת קניות:\n' + results.map((r, i) => `${i + 1}. ${r.name}`).join('\n') };
   }
 
   if (text === 'נקה רשימה') {
-    await db.prepare('DELETE FROM items').run();
+    await db.prepare('DELETE FROM list_items WHERE chat_id = ?').bind(chatId).run();
     return { text: 'הרשימה נוקתה 🧹' };
   }
 
   const removeMatch = text.match(/^(הסר|מחק|קניתי|קנינו)\s+(.+)$/);
   if (removeMatch) {
     const item = removeMatch[2].trim();
-    const result = await db.prepare('DELETE FROM items WHERE name = ?').bind(item).run();
+    const result = await db.prepare('DELETE FROM list_items WHERE chat_id = ? AND name = ?').bind(chatId, item).run();
     if (result.meta.changes === 0) return { text: `"${item}" לא ברשימה` };
-    const { left } = await db.prepare('SELECT COUNT(*) AS left FROM items').first();
+    const { left } = await db.prepare('SELECT COUNT(*) AS left FROM list_items WHERE chat_id = ?').bind(chatId).first();
     return { text: `הוסר "${item}" (נשארו ${left})` };
   }
 
@@ -99,8 +92,8 @@ async function handleCommand(text, db) {
   const items = text.split(/[,\n]/).map(s => s.trim()).filter(Boolean);
   const added = [];
   for (const item of items) {
-    const result = await db.prepare('INSERT OR IGNORE INTO items (name, added_at) VALUES (?, ?)')
-      .bind(item, Date.now()).run();
+    const result = await db.prepare('INSERT OR IGNORE INTO list_items (chat_id, name, added_at) VALUES (?, ?, ?)')
+        .bind(chatId, item, Date.now()).run();
     if (result.meta.changes > 0) added.push(item);
   }
   if (added.length === 0) return { text: 'כבר ברשימה 👍' };
