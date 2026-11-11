@@ -1,0 +1,18 @@
+// Cloudflare reads this file on every push to know how to deploy the bot.
+{
+  "name": "grocery-bot",                 // must match the Worker's name in Cloudflare
+  "main": "worker.js",                   // the bot's code
+  "compatibility_date": "2026-11-01",
+
+  // Connects the "grocery" database as env.DB (same as the binding you added by hand)
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "grocery",
+      "database_id": "935d9d98-f937-4e87-87ea-5b0d790e47fd"
+    }
+  ],
+
+  // Keep text variables set in the dashboard (like ALLOWED_CHAT_IDS) instead of deleting them on deploy
+  "keep_vars": true
+}
