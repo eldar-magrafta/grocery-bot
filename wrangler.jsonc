@@ -14,5 +14,11 @@
   ],
 
   // Keep text variables set in the dashboard (like ALLOWED_CHAT_IDS) instead of deleting them on deploy
-  "keep_vars": true
+  "keep_vars": true,
+
+  // No extra test link for each deploy
+  "preview_urls": false,
+
+  // Save the bot's logs in Cloudflare (Worker -> Logs), useful for debugging
+  "observability": { "enabled": true }
 }
